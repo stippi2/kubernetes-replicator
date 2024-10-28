@@ -225,7 +225,7 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 	labelsCopy := make(map[string]string)
 
 	stripLabels, ok := source.Annotations[common.StripLabels]
-	if !ok && stripLabels != "true" {
+	if !ok || stripLabels != "true" {
 		if source.Labels != nil {
 			for key, value := range source.Labels {
 				labelsCopy[key] = value
@@ -245,7 +245,7 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 		logger.Debugf("Updating existing secret %s/%s", target.Name, resourceCopy.Name)
 		obj, err = r.Client.CoreV1().ConfigMaps(target.Name).Update(context.TODO(), resourceCopy, metav1.UpdateOptions{})
 	} else {
-		logger.Debugf("Creating a new secret secret %s/%s", target.Name, resourceCopy.Name)
+		logger.Debugf("Creating a new secret %s/%s", target.Name, resourceCopy.Name)
 		obj, err = r.Client.CoreV1().ConfigMaps(target.Name).Create(context.TODO(), resourceCopy, metav1.CreateOptions{})
 	}
 	if err != nil {

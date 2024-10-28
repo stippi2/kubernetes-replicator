@@ -136,7 +136,7 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 	labelsCopy := make(map[string]string)
 
 	stripLabels, ok := source.Annotations[common.StripLabels]
-	if !ok && stripLabels != "true" {
+	if !ok || stripLabels != "true" {
 		if source.Labels != nil {
 			for key, value := range source.Labels {
 				labelsCopy[key] = value
@@ -178,7 +178,7 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 	return nil
 }
 
-//Checks if Role required for RoleBinding exists. Retries a few times before returning error to allow replication to catch up
+// Checks if Role required for RoleBinding exists. Retries a few times before returning error to allow replication to catch up
 func (r *Replicator) canReplicate(targetNameSpace string, roleRef string) (err error) {
 	for i := 0; i < 5; i++ {
 		_, err = r.Client.RbacV1().Roles(targetNameSpace).Get(context.TODO(), roleRef, metav1.GetOptions{})
