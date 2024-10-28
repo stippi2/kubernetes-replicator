@@ -92,9 +92,6 @@ func setupFakeClientSet() *fake.Clientset {
 		case k8stesting.CreateAction:
 			obj := a.GetObject().(metav1.Object)
 			incrementResourceVersion(obj)
-		case k8stesting.UpdateAction:
-			obj := a.GetObject().(metav1.Object)
-			incrementResourceVersion(obj)
 		case k8stesting.PatchAction:
 			patchAction := action.(k8stesting.PatchAction)
 
@@ -1279,6 +1276,7 @@ func TestSecretReplicator(t *testing.T) {
 
 		updTarget, err := secrets.Get(context.TODO(), target.Name, metav1.GetOptions{})
 		require.NoError(t, err)
+
 		require.NotEqual(t, []byte("Hello Bar"), updTarget.Data["bar"])
 	})
 

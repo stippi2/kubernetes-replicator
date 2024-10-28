@@ -21,6 +21,8 @@ type AddFunc func(obj *v1.Namespace)
 
 type UpdateFunc func(old *v1.Namespace, new *v1.Namespace)
 
+type DeleteFunc func(old *v1.Namespace)
+
 type NamespaceWatcher struct {
 	doOnce sync.Once
 
@@ -29,6 +31,7 @@ type NamespaceWatcher struct {
 
 	AddFuncs    []AddFunc
 	UpdateFuncs []UpdateFunc
+	DeleteFuncs []DeleteFunc
 }
 
 // create will create a new namespace if one does not already exist. If it does, it will do nothing.
@@ -49,6 +52,13 @@ func (nw *NamespaceWatcher) create(client kubernetes.Interface, resyncPeriod tim
 			}
 		}
 
+		namespaceDeleted := func(obj interface{}) {
+			namespace := obj.(*v1.Namespace)
+			for _, deleteFunc := range nw.DeleteFuncs {
+				go deleteFunc(namespace)
+			}
+		}
+
 		nw.NamespaceStore, nw.NamespaceController = cache.NewInformer(
 			&cache.ListWatch{
 				ListFunc: func(lo metav1.ListOptions) (runtime.Object, error) {
@@ -63,6 +73,7 @@ func (nw *NamespaceWatcher) create(client kubernetes.Interface, resyncPeriod tim
 			cache.ResourceEventHandlerFuncs{
 				AddFunc:    namespaceAdded,
 				UpdateFunc: namespaceUpdated,
+				DeleteFunc: namespaceDeleted,
 			},
 		)
 
@@ -82,4 +93,10 @@ func (nw *NamespaceWatcher) OnNamespaceAdded(client kubernetes.Interface, resync
 func (nw *NamespaceWatcher) OnNamespaceUpdated(client kubernetes.Interface, resyncPeriod time.Duration, updateFunc UpdateFunc) {
 	nw.create(client, resyncPeriod)
 	nw.UpdateFuncs = append(nw.UpdateFuncs, updateFunc)
+}
+
+// OnNamespaceDeleted will add another method to a list of functions to be called when a namespace is deleted
+func (nw *NamespaceWatcher) OnNamespaceDeleted(client kubernetes.Interface, resyncPeriod time.Duration, deleteFunc func(obj *v1.Namespace)) {
+	nw.create(client, resyncPeriod)
+	nw.DeleteFuncs = append(nw.DeleteFuncs, deleteFunc)
 }

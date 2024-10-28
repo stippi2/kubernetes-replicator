@@ -84,6 +84,7 @@ func NewGenericReplicator(config ReplicatorConfig) *GenericReplicator {
 
 	namespaceWatcher.OnNamespaceAdded(config.Client, config.ResyncPeriod, repl.NamespaceAdded)
 	namespaceWatcher.OnNamespaceUpdated(config.Client, config.ResyncPeriod, repl.NamespaceUpdated)
+	namespaceWatcher.OnNamespaceDeleted(config.Client, config.ResyncPeriod, repl.NamespaceDeleted)
 
 	repl.Store = store
 	repl.Controller = controller
@@ -244,6 +245,25 @@ func (r *GenericReplicator) NamespaceUpdated(nsOld *v1.Namespace, nsNew *v1.Name
 		// replicate resources to updated ns
 		logger.Infof("labels of namespace %s changed, attempting to replicate %ss", nsNew.Name, r.Kind)
 		r.NamespaceAdded(nsNew)
+	}
+}
+
+func (r *GenericReplicator) NamespaceDeleted(ns *v1.Namespace) {
+	logger := log.WithField("kind", r.Kind).WithField("target", ns.Name)
+	logger.Debugf("deleting %s %s", r.Kind, ns.Name)
+
+	for sourceKey := range r.DependencyMap {
+		obj, exists, err := r.Store.GetByKey(sourceKey)
+		if err != nil {
+			logger.WithError(err).Error("error fetching object from store")
+		} else if !exists {
+			logger.Warn("object not found in store")
+		} else {
+			logger.Debugf("object found in store: %s", sourceKey)
+		}
+
+		logger.Infof("removed %s %s from %s", r.Kind, sourceKey, ns.Name)
+		r.DeleteResource(*ns, obj)
 	}
 }
 
