@@ -4,13 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	jsonpatch "gopkg.in/evanphx/json-patch.v4"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/json"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
-	"k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
-	"k8s.io/client-go/tools/clientcmd"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +12,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/mittwald/kubernetes-replicator/replicate/common"
 	pkgerrors "github.com/pkg/errors"
@@ -97,86 +98,70 @@ func setupFakeClientSet() *fake.Clientset {
 		case k8stesting.PatchAction:
 			patchAction := action.(k8stesting.PatchAction)
 
-			// Get the object to be patched from the ObjectTracker
-			originalObj, err := fakeClientSet.Tracker().Get(
-				action.GetResource(),
-				patchAction.GetNamespace(),
-				patchAction.GetName(),
-			)
+			obj, err := fakeClientSet.Tracker().Get(patchAction.GetResource(), patchAction.GetNamespace(), patchAction.GetName(), metav1.GetOptions{})
 			if err != nil {
 				return true, nil, err
 			}
 
-			// Serialize the object to JSON
-			originalData, err := json.Marshal(originalObj)
+			old, err := json.Marshal(obj)
 			if err != nil {
 				return true, nil, err
 			}
 
-			// Apply the patch according to the patch type
-			var patchedData []byte
+			// reset the object in preparation to unmarshal, since unmarshal does not guarantee that fields
+			// in obj that are removed by patch are cleared
+			value := reflect.ValueOf(obj)
+			value.Elem().Set(reflect.New(value.Type().Elem()).Elem())
+
 			switch patchAction.GetPatchType() {
 			case types.JSONPatchType:
 				patch, err := jsonpatch.DecodePatch(patchAction.GetPatch())
 				if err != nil {
 					return true, nil, err
 				}
-				patchedData, err = patch.Apply(originalData)
+				modified, err := patch.Apply(old)
 				if err != nil {
 					return true, nil, err
 				}
 
+				if err = json.Unmarshal(modified, obj); err != nil {
+					return true, nil, err
+				}
 			case types.MergePatchType:
-				patchedData, err = jsonpatch.MergePatch(originalData, patchAction.GetPatch())
+				modified, err := jsonpatch.MergePatch(old, patchAction.GetPatch())
 				if err != nil {
 					return true, nil, err
 				}
 
+				if err := json.Unmarshal(modified, obj); err != nil {
+					return true, nil, err
+				}
 			case types.StrategicMergePatchType:
-				patchedData, err = strategicpatch.StrategicMergePatch(originalData, patchAction.GetPatch(), originalObj)
+				mergedByte, err := strategicpatch.StrategicMergePatch(old, patchAction.GetPatch(), obj)
 				if err != nil {
 					return true, nil, err
 				}
-
-			default:
-				return true, nil, fmt.Errorf("unsupported patch type: %v", patchAction.GetPatchType())
-			}
-
-			// Create a new, empty object
-			var newObj runtime.Object
-			switch originalObj.(type) {
-			case *corev1.Secret:
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      patchAction.GetName(),
-						Namespace: patchAction.GetNamespace(),
-					},
+				if err = json.Unmarshal(mergedByte, obj); err != nil {
+					return true, nil, err
 				}
-				newObj = secret
-			// TODO: Add more object types here
 			default:
-				return true, nil, fmt.Errorf("unsupported object type: %T", originalObj)
-			}
-
-			// Decode the patched JSON into the empty object
-			if err := json.Unmarshal(patchedData, newObj); err != nil {
-				return true, nil, err
+				return true, nil, fmt.Errorf("PatchType %s is not supported", patchAction.GetPatchType())
 			}
 
 			// Set the resource version
-			incrementResourceVersion(newObj.(metav1.Object))
+			incrementResourceVersion(obj.(metav1.Object))
 
 			// Update the object in the ObjectTracker. This will also trigger watch events.
 			err = fakeClientSet.Tracker().Update(
 				action.GetResource(),
-				newObj,
+				obj,
 				patchAction.GetNamespace(),
 			)
 			if err != nil {
 				return true, nil, err
 			}
 
-			return true, newObj, nil
+			return true, obj, nil
 		}
 		return false, nil, nil
 	})
