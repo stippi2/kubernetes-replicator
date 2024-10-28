@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/clientcmd"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,6 +68,121 @@ func (pf *PlainFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
+func incrementResourceVersion(obj metav1.Object) {
+	rv := obj.GetResourceVersion()
+	if rv == "" {
+		obj.SetResourceVersion("1")
+		log.Debugf("### initialized resource version of %s/%s: %s", obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion())
+		return
+	}
+	if i, err := strconv.Atoi(rv); err == nil {
+		obj.SetResourceVersion(strconv.Itoa(i + 1))
+		log.Debugf("### incremented resource version of %s/%s: %s", obj.GetNamespace(), obj.GetName(), obj.GetResourceVersion())
+	} else {
+		log.Errorf("### error parsing resource version of %s/%s: %s", obj.GetNamespace(), obj.GetName(), rv)
+	}
+}
+
+// setupFakeClientSet creates a fake.Clientset with a reactor that increments the resource version
+func setupFakeClientSet() *fake.Clientset {
+	fakeClientSet := fake.NewClientset()
+	fakeClientSet.PrependReactor("*", "*", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+		switch a := action.(type) {
+		case k8stesting.CreateAction:
+			obj := a.GetObject().(metav1.Object)
+			incrementResourceVersion(obj)
+		case k8stesting.UpdateAction:
+			obj := a.GetObject().(metav1.Object)
+			incrementResourceVersion(obj)
+		case k8stesting.PatchAction:
+			patchAction := action.(k8stesting.PatchAction)
+
+			// Get the object to be patched from the ObjectTracker
+			originalObj, err := fakeClientSet.Tracker().Get(
+				action.GetResource(),
+				patchAction.GetNamespace(),
+				patchAction.GetName(),
+			)
+			if err != nil {
+				return true, nil, err
+			}
+
+			// Serialize the object to JSON
+			originalData, err := json.Marshal(originalObj)
+			if err != nil {
+				return true, nil, err
+			}
+
+			// Apply the patch according to the patch type
+			var patchedData []byte
+			switch patchAction.GetPatchType() {
+			case types.JSONPatchType:
+				patch, err := jsonpatch.DecodePatch(patchAction.GetPatch())
+				if err != nil {
+					return true, nil, err
+				}
+				patchedData, err = patch.Apply(originalData)
+				if err != nil {
+					return true, nil, err
+				}
+
+			case types.MergePatchType:
+				patchedData, err = jsonpatch.MergePatch(originalData, patchAction.GetPatch())
+				if err != nil {
+					return true, nil, err
+				}
+
+			case types.StrategicMergePatchType:
+				patchedData, err = strategicpatch.StrategicMergePatch(originalData, patchAction.GetPatch(), originalObj)
+				if err != nil {
+					return true, nil, err
+				}
+
+			default:
+				return true, nil, fmt.Errorf("unsupported patch type: %v", patchAction.GetPatchType())
+			}
+
+			// Create a new, empty object
+			var newObj runtime.Object
+			switch originalObj.(type) {
+			case *corev1.Secret:
+				secret := &corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      patchAction.GetName(),
+						Namespace: patchAction.GetNamespace(),
+					},
+				}
+				newObj = secret
+			// TODO: Add more object types here
+			default:
+				return true, nil, fmt.Errorf("unsupported object type: %T", originalObj)
+			}
+
+			// Decode the patched JSON into the empty object
+			if err := json.Unmarshal(patchedData, newObj); err != nil {
+				return true, nil, err
+			}
+
+			// Set the resource version
+			incrementResourceVersion(newObj.(metav1.Object))
+
+			// Update the object in the ObjectTracker. This will also trigger watch events.
+			err = fakeClientSet.Tracker().Update(
+				action.GetResource(),
+				newObj,
+				patchAction.GetNamespace(),
+			)
+			if err != nil {
+				return true, nil, err
+			}
+
+			return true, newObj, nil
+		}
+		return false, nil, nil
+	})
+	return fakeClientSet
+}
+
 func setupRealClientSet(t *testing.T) *kubernetes.Clientset {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	//is KUBECONFIG is not specified try to use the local KUBECONFIG or the in cluster config
@@ -81,7 +203,8 @@ func TestSecretReplicator(t *testing.T) {
 	log.SetLevel(log.TraceLevel)
 	log.SetFormatter(&PlainFormatter{})
 
-	client := setupRealClientSet(t)
+	//client := setupRealClientSet(t)
+	client := setupFakeClientSet()
 
 	repl := NewReplicator(client, 60*time.Second, false, false)
 	go repl.Run()
@@ -1290,7 +1413,8 @@ func TestSecretReplicatorSyncByContent(t *testing.T) {
 	log.SetFormatter(&PlainFormatter{})
 
 	prefix := namespacePrefix()
-	client := setupRealClientSet(t)
+	//client := setupRealClientSet(t)
+	client := setupFakeClientSet()
 	ctx := context.TODO()
 
 	repl := NewReplicator(client, 60*time.Second, false, true)
