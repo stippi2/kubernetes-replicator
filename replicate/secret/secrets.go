@@ -182,11 +182,12 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 
 	sort.Strings(replicatedKeys)
 
-	labelsCopy := make(map[string]string)
+	var labelsCopy map[string]string
 
 	stripLabels, ok := source.Annotations[common.StripLabels]
 	if !ok || stripLabels != "true" {
 		if source.Labels != nil {
+			labelsCopy = make(map[string]string)
 			for key, value := range source.Labels {
 				labelsCopy[key] = value
 			}
