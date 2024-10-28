@@ -72,7 +72,7 @@ func (r *Replicator) ReplicateDataFrom(sourceObj interface{}, targetObj interfac
 	sourceVersion := source.ResourceVersion
 
 	if ok && targetVersion == sourceVersion && !r.SyncByContent {
-		logger.Debugf("target %s is already up-to-date", common.MustGetKey(target))
+		logger.Debugf("target %s is already up-to-date (target version: %s)", common.MustGetKey(target), targetVersion)
 		return nil
 	}
 
@@ -156,7 +156,7 @@ func (r *Replicator) ReplicateObjectTo(sourceObj interface{}, target *v1.Namespa
 		sourceVersion := source.ResourceVersion
 
 		if ok && targetVersion == sourceVersion {
-			logger.Debugf("Secret %s is already up-to-date", common.MustGetKey(targetObject))
+			logger.Debugf("Secret %s is already up-to-date (target version: %s)", common.MustGetKey(targetObject), targetVersion)
 			return nil
 		}
 
