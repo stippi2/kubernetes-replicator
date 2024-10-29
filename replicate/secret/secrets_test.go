@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/fake"
@@ -99,7 +101,7 @@ func setupFakeClientSet() *fake.Clientset {
 
 			// Get the object to be patched from the ObjectTracker
 			originalObj, err := fakeClientSet.Tracker().Get(
-				action.GetResource(),
+				patchAction.GetResource(),
 				patchAction.GetNamespace(),
 				patchAction.GetName(),
 			)
@@ -167,6 +169,72 @@ func setupFakeClientSet() *fake.Clientset {
 		}
 		return false, nil, nil
 	})
+
+	// Reactor that deletes all resources in a namespace when the namespace is deleted
+	fakeClientSet.PrependReactor("delete", "namespaces", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		deleteAction := action.(k8stesting.DeleteAction)
+		nsName := deleteAction.GetName()
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+
+			tracker := fakeClientSet.Tracker()
+
+			resourcesToDelete := []struct {
+				resource string
+				kind     string
+			}{
+				{"configmaps", "ConfigMap"},
+				{"secrets", "Secret"},
+			}
+
+			// Delete all resources in the deleted namespace
+			for _, res := range resourcesToDelete {
+				list, err := tracker.List(
+					schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: res.resource,
+					},
+					schema.GroupVersionKind{
+						Group:   "",
+						Version: "v1",
+						Kind:    res.kind,
+					},
+					nsName,
+				)
+				if err != nil {
+					fmt.Printf("Error listing %s: %v\n", res.resource, err)
+					continue
+				}
+
+				items, err := meta.ExtractList(list)
+				if err != nil {
+					fmt.Printf("Error extracting %s list: %v\n", res.resource, err)
+					continue
+				}
+
+				for _, item := range items {
+					obj := item.(metav1.Object)
+					err := tracker.Delete(
+						schema.GroupVersionResource{
+							Group:    "",
+							Version:  "v1",
+							Resource: res.resource,
+						},
+						obj.GetNamespace(),
+						obj.GetName(),
+					)
+					if err != nil {
+						fmt.Printf("Error deleting %s/%s: %v\n", res.resource, obj.GetName(), err)
+					}
+				}
+			}
+		}()
+
+		return false, nil, nil
+	})
+
 	return fakeClientSet
 }
 
@@ -635,9 +703,7 @@ func TestSecretReplicator(t *testing.T) {
 			},
 		})
 
-		fmt.Printf("removing key foo from source secret\n")
 		_, err = secrets.Patch(context.TODO(), source.Name, types.JSONPatchType, []byte(`[{"op": "remove", "path": "/data/foo"}]`), metav1.PatchOptions{})
-		fmt.Printf("source secret patched\n")
 		require.NoError(t, err)
 
 		waitWithTimeout(wg, MaxWaitTime)
@@ -1270,8 +1336,10 @@ func TestSecretReplicator(t *testing.T) {
 			},
 		})
 
+		fmt.Printf("deleting namespace %s\n", ns4.Name)
 		err = client.CoreV1().Namespaces().Delete(context.TODO(), ns4.Name, metav1.DeleteOptions{})
 		require.NoError(t, err)
+		fmt.Printf("namespace deleted\n")
 
 		waitWithTimeout(wg, MaxWaitTime*10)
 		close(stop)
