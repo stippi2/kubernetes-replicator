@@ -15,6 +15,7 @@ import (
 
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/fake"
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
@@ -160,6 +162,69 @@ func setupFakeClientSet() *fake.Clientset {
 
 			return true, obj, nil
 		}
+		return false, nil, nil
+	})
+
+	fakeClientSet.PrependReactor("delete", "namespaces", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		deleteAction := action.(k8stesting.DeleteAction)
+		nsName := deleteAction.GetName()
+
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+
+			tracker := fakeClientSet.Tracker()
+
+			resourcesToDelete := []struct {
+				resource string
+				kind     string
+			}{
+				{"configmaps", "ConfigMap"},
+				{"secrets", "Secret"},
+			}
+
+			// Delete all resources in the deleted namespace
+			for _, res := range resourcesToDelete {
+				list, err := tracker.List(
+					schema.GroupVersionResource{
+						Group:    "",
+						Version:  "v1",
+						Resource: res.resource,
+					},
+					schema.GroupVersionKind{
+						Group:   "",
+						Version: "v1",
+						Kind:    res.kind,
+					},
+					nsName,
+				)
+				if err != nil {
+					fmt.Printf("Error listing %s: %v\n", res.resource, err)
+					continue
+				}
+
+				items, err := meta.ExtractList(list)
+				if err != nil {
+					fmt.Printf("Error extracting %s list: %v\n", res.resource, err)
+					continue
+				}
+
+				for _, item := range items {
+					obj := item.(metav1.Object)
+					err := tracker.Delete(
+						schema.GroupVersionResource{
+							Group:    "",
+							Version:  "v1",
+							Resource: res.resource,
+						},
+						obj.GetNamespace(),
+						obj.GetName(),
+					)
+					if err != nil {
+						fmt.Printf("Error deleting %s/%s: %v\n", res.resource, obj.GetName(), err)
+					}
+				}
+			}
+		}()
 		return false, nil, nil
 	})
 	return fakeClientSet
