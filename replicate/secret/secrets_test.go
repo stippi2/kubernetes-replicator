@@ -143,20 +143,7 @@ func setupFakeClientSet() *fake.Clientset {
 			}
 
 			// Create a new, empty object
-			var newObj runtime.Object
-			switch originalObj.(type) {
-			case *corev1.Secret:
-				secret := &corev1.Secret{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      patchAction.GetName(),
-						Namespace: patchAction.GetNamespace(),
-					},
-				}
-				newObj = secret
-			// TODO: Add more object types here
-			default:
-				return true, nil, fmt.Errorf("unsupported object type: %T", originalObj)
-			}
+			newObj := reflect.New(reflect.TypeOf(originalObj).Elem()).Interface().(runtime.Object)
 
 			// Decode the patched JSON into the empty object
 			if err := json.Unmarshal(patchedData, newObj); err != nil {
